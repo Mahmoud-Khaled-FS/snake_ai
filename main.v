@@ -2,30 +2,13 @@ module main
 import raylib as rl
 import math
 import rand
+import arrays
 
 enum GameMode {
+	start
 	playing
 	over
 	won
-}
-
-struct Game {
-mut:
-	rows 							int
-	columns 					int
-	screen_height 		int
-	screen_width 			int
-	area_height 			int
-	area_padding_top 	int
-	area_padding_left int
-	cell_width 				int
-	cell_height 			int
-
-	mode							GameMode
-	score							int
-
-	apple 						Apple
-	snake							Snake
 }
 
 struct Apple {
@@ -39,10 +22,117 @@ mut:
 
 	move_timer f32
 	move_interval f32
-	dir rl.Vector2
+	dir Direction
 	should_grow bool
-	next_dir ?rl.Vector2
+	next_dir ?Direction
 }
+
+enum Direction {
+	up
+	down
+	left
+	right
+}
+
+fn move_vector(mut v2 &rl.Vector2, dir Direction) {
+	match dir{
+		.up { v2.y += -1 }
+		.down { v2.y += 1 }
+		.left { v2.x += -1 }
+		.right { v2.x += 1 }
+	}
+}
+
+fn is_hit_wall(head rl.Vector2, columns int, rows int) bool {
+ 	return head.x >= columns || head.x < 0 || head.y >= rows || head.y < 0
+}
+
+fn (mut s Snake) update() {
+	s.move_timer += rl.get_frame_time()
+
+	if s.move_timer < s.move_interval {
+		return
+	}
+	old_tail := rl.Vector2{s.body[s.body.len - 1].x, s.body[s.body.len - 1].y}
+	
+	if s.next_dir != none {
+		s.dir = s.next_dir
+		s.next_dir = none
+	}
+
+	s.move_timer -= s.move_interval
+	for i := s.body.len - 1; i > 0; i--{
+		s.body[i].x = s.body[i - 1].x
+		s.body[i].y = s.body[i - 1].y
+	}
+
+	move_vector(mut s.body[0], s.dir)
+	// s.body[0].y += s.dir.y
+	// s.body[0].x += s.dir.x
+	
+	if s.should_grow {
+		s.body << old_tail
+		s.should_grow = false
+	}
+}
+
+fn (s &Snake) is_collapse() bool {
+	head := s.body[0]
+	for i := 1; i < s.body.len; i++ {
+		if head.x == s.body[i].x && head.y == s.body[i].y {
+			return true
+		}
+	}
+	return false
+}
+
+fn (mut s Snake) handle_input() {
+	key := rl.KeyboardKey.from(rl.get_key_pressed()) or {
+		return
+	}
+
+	match key {
+		.key_up {
+			s.set_next_dir(.up)
+		}
+		.key_down {
+			s.set_next_dir(.down)
+		}
+		.key_left {
+			s.set_next_dir(.left)
+		}
+		.key_right {
+			s.set_next_dir(.right)
+		}
+		else {}
+	}
+}
+
+fn (mut s Snake) set_next_dir(dir Direction) {
+	match dir {
+		.up {
+			if s.dir != .down {
+				s.next_dir = .up
+			}
+		}
+		.down {
+			if s.dir != .up {
+				s.next_dir = .down
+			}
+		}
+		.left {
+			if s.dir != .right {
+				s.next_dir = .left
+			}
+		}
+		.right {
+			if s.dir != .left {
+				s.next_dir = .right
+			}
+		}
+	}
+}
+
 
 fn (mut g Game) create_apple() {
 	mut empty_cells := []rl.Vector2{}
@@ -73,8 +163,39 @@ fn (mut g Game) create_snake() {
 	}
 	g.snake.body << head_pos
 	g.snake.body << rl.Vector2{head_pos.x, head_pos.y + 1}
-	g.snake.move_interval = 0.15
-	g.snake.dir = rl.Vector2{ 0, -1 }
+	g.snake.move_interval = 0.05
+	g.snake.dir = .up
+}
+
+fn (g &Game) is_snake_eating() bool {
+	head := g.snake.body[0]
+	return head.x == g.apple.pos.x && head.y == g.apple.pos.y
+}
+
+struct Game {
+mut:
+	rows 							int
+	columns 					int
+	screen_height 		int
+	screen_width 			int
+	area_height 			int
+	area_padding_top 	int
+	area_padding_left int
+	cell_width 				int
+	cell_height 			int
+
+	camera						rl.Camera2D
+
+	mode							GameMode
+	score							int
+	biggest_score			int
+
+	apple 						Apple
+	snake							Snake
+
+	is_agent_playing	bool
+	agent							Agent
+	count_playing			int
 }
 
 fn (g &Game) draw_apple() {
@@ -83,17 +204,6 @@ fn (g &Game) draw_apple() {
 	w := 15
 	rl.draw_rectangle((x - w /2) + g.cell_width / 2, (y - w/2) + g.cell_height / 2, w, w, rl.Color{255, 10, 10, 255})
 }
-
-// fn (g &Game) draw_snake() {
-// 	for sb in g.snake.body {
-// 		// println(sb
-// 		x := int(sb.x * g.cell_width)
-// 		y := int(sb.y * g.cell_height)
-// 		w := g.cell_width - 5
-		
-// 		rl.draw_rectangle((x - w /2) + g.cell_width / 2, (y - w / 2) + g.cell_height / 2, w, w, rl.Color{25, 255, 10, 255})
-// 	}
-// }
 
 fn (g &Game) draw_snake() {
 	body_len := g.snake.body.len
@@ -110,18 +220,11 @@ fn (g &Game) draw_snake() {
 			t = f32(i) / f32(body_len - 1)
 		}
 
-		// Head: 25,255,10
-		// Tail: 5,135,40
 		r := u8(25.0 - 20.0 * t)
 		gr := u8(255.0 - 120.0 * t)
 		b := u8(10.0 + 30.0 * t)
 
-		color := rl.Color{
-			r
-			gr
-			b
-			255
-		}
+		color := rl.Color{ r, gr, b, 255 }
 
 		rl.draw_rectangle(
 			(x - w / 2) + g.cell_width / 2,
@@ -133,58 +236,56 @@ fn (g &Game) draw_snake() {
 	}
 }
 
+fn (mut g Game) init() {
+	g.rows = 20
+	g.columns = 20
+	g.screen_width = 600
+	g.screen_height = 800
+	g.area_height = math.min(g.screen_height, g.screen_width)
+	g.area_padding_top = (g.screen_height - g.area_height) / 2
+	g.area_padding_left = (g.screen_width - g.area_height) / 2
+	g.cell_width = g.area_height / g.columns
+	g.cell_height = g.area_height / g.rows
 
-fn (mut s Snake) update() {
-	s.move_timer += rl.get_frame_time()
+	g.mode = .playing
 
-	if s.move_timer < s.move_interval {
-		return
+	if g.score > g.biggest_score {
+		g.biggest_score = g.score
 	}
 
-	old_tail := rl.Vector2{s.body[s.body.len - 1].x, s.body[s.body.len - 1].y}
-	
-	if s.next_dir != none {
-		s.dir.x = s.next_dir.x
-		s.dir.y = s.next_dir.y
-		s.next_dir = none
-	}
+	g.score = 0
 
-	s.move_timer -= s.move_interval
-	for i := s.body.len - 1; i > 0; i--{
-		s.body[i].x = s.body[i - 1].x
-		s.body[i].y = s.body[i - 1].y
-	}
+	g.is_agent_playing = true
+	g.count_playing += 1
 
-	s.body[0].y += s.dir.y
-	s.body[0].x += s.dir.x
-	
-	if s.should_grow {
-		s.body << old_tail
-		s.should_grow = false
-	}
+	g.create_snake()
+	g.create_apple()
 }
 
-fn (s &Snake) is_collapse() bool {
-	head := s.body[0]
-	for i := 1; i < s.body.len; i++ {
-		if head.x == s.body[i].x && head.y == s.body[i].y {
-			return true
-		}
+fn (mut g Game) update_start() {
+	key := rl.KeyboardKey.from(rl.get_key_pressed()) or { rl.KeyboardKey.key_null }
+	if key == .key_space {
+		g.mode = .playing
+	} 
+}
+
+fn (mut g Game) update_playing() {
+	if g.is_agent_playing {
+		action := g.agent.action(g)
+		g.snake.set_next_dir(action)
 	}
-	return false
-}
 
-fn (g &Game) is_snake_eating() bool {
-	head := g.snake.body[0]
-	return head.x == g.apple.pos.x && head.y == g.apple.pos.y
-}
-
-fn (mut g Game) update() {
+	mut agent_reward := 0
+	g.snake.handle_input()
 	g.snake.update()
 
 	head := g.snake.body[0]
-	if head.x >= g.columns || head.x < 0 || head.y >= g.rows || head.y < 0 || g.snake.is_collapse() {
+	if is_hit_wall(head, g.columns, g.rows) || g.snake.is_collapse() {
 		g.mode = .over
+		agent_reward = -50
+		if g.is_agent_playing {
+			g.agent.reward(g, agent_reward, true)
+		}
 		return
 	}
 
@@ -192,116 +293,221 @@ fn (mut g Game) update() {
 		g.snake.should_grow = true
 		g.score += 1
 		g.create_apple()
+		agent_reward = 100
+	}
+	if g.is_agent_playing {
+		g.agent.reward(g, agent_reward, false)
 	}
 }
 
-fn Game.new() Game {
-	mut game := Game{}
-	game.rows = 20
-	game.columns = 20
-	game.screen_width = 600
-	game.screen_height = 800
-	game.area_height = math.min(game.screen_height, game.screen_width)
-	game.area_padding_top = (game.screen_height - game.area_height) / 2
-	game.area_padding_left = (game.screen_width - game.area_height) / 2
-	game.cell_width = game.area_height / game.columns
-	game.cell_height = game.area_height / game.rows
-	game.mode = .playing
+fn (mut g Game) update_over() {
+	if g.is_agent_playing {
+		 g.init()
+	}
+	key := rl.KeyboardKey.from(rl.get_key_pressed()) or { rl.KeyboardKey.key_null }
+	if key == .key_r {
+		 g.init()
+	}
+}
 
-	game.create_snake()
-	game.create_apple()
+fn (mut g Game) update_won() {
+	key := rl.KeyboardKey.from(rl.get_key_pressed()) or { rl.KeyboardKey.key_null }
+	if key == .key_r {
+		 g.init()
+	}
+}
+
+fn (mut g Game) update() {
+	match g.mode {
+		.start { g.update_start() }
+		.playing { g.update_playing() }
+		.over { g.update_over() }
+		.won { g.update_won() }
+	}
+}
+
+fn (g &Game) draw_start() {
+	rl.draw_text("Press (SPACE) to start", 10, 10, 30, rl.Color{255, 255, 255, 255})
+}
+
+fn (g &Game) draw_playing() {
+	rl.draw_text("Score (${g.score})", 10, 10, 30, rl.Color{255, 255, 255, 255})
+	rl.draw_text("Game: (${g.count_playing})", 10, 40, 30, rl.Color{255, 255, 255, 255})
+
+	rl.begin_mode_2d(g.camera)
+	for i := 0; i <= g.rows; i++ {
+		rl.draw_rectangle(0, i * g.cell_height, g.area_height, 1, rl.Color{255, 10, 10, 55})
+	}
+
+	for i := 0; i <= g.columns; i++ {
+		rl.draw_rectangle(i * g.cell_width, 0, 1, g.area_height, rl.Color{255, 10, 10, 55})
+	}
+
+	g.draw_apple()
+	g.draw_snake()
+
+	rl.end_mode_2d()
+}
+
+fn (g &Game) draw_over() {
+	rl.draw_text("Press (R) to restart", 10, 10, 30, rl.Color{255, 255, 255, 255})
+	rl.draw_text("Score (${g.score})", 10, 50, 30, rl.Color{255, 255, 255, 255})
+}
+
+fn (g &Game) draw_won() {
+	rl.draw_text("Press (R) to restart", 10, 10, 30, rl.Color{255, 255, 255, 255})
+	rl.draw_text("Score (${g.score})", 10, 50, 30, rl.Color{255, 255, 255, 255})
+	rl.draw_text("Win!", 10, 90, 30, rl.Color{255, 255, 255, 255})
+}
+
+fn (g &Game) draw() {
+	match g.mode {
+		.start { g.draw_start() }
+		.playing { g.draw_playing() }
+		.over { g.draw_over() }
+		.won { g.draw_won() }
+	}
+}
+
+struct Agent {
+mut:
+	q_table map[string][]f64
+	last_key ?string
+	last_action ?Action
+}
+
+enum Action {
+	straight
+	left
+	right
+}
+
+fn action_to_dir(action Action, dir Direction) Direction {
+	match action {
+		.straight {
+			return dir
+		}
+		.left {
+			return match dir {
+				.up { .left }
+				.left { .down }
+				.down { .right }
+				.right { .up }
+			}
+		}
+		.right {
+			return match dir {
+				.up { .right }
+				.right { .down }
+				.down { .left }
+				.left { .up }
+			}
+		}
+	}
+}
+
+fn (mut a Agent) action(game &Game) Direction {
+	snake := game.snake
+	mut snake_head := game.snake.body[0]
+	key := "${snake_head.x},${snake_head.y},${game.apple.pos.x},${game.apple.pos.y},${snake.dir}"
+	a.last_key = key
+	if key !in a.q_table {
+		a.q_table[key] = [0.0, 0.0, 0.0]
+		for i, _ in a.q_table[key] {
+			mut head := snake_head
+			dir := action_to_dir(Action.from(i) or {panic(err)}, snake.dir)
+			move_vector(mut head, dir)
+			if is_hit_wall(head, game.columns, game.rows) {
+				a.q_table[key][i] = -100.0
+			}
+		}
+	}
+
+	p := rand.f32()
+	mut rand_index := 0
+	if p < 0.2 {
+		rand_index = rand.intn(3) or { 0 } 
+	}else {
+		rand_index = arrays.idx_max(a.q_table[key]) or { panic(err) }
+	}
+	action := Action.from(rand_index) or { Action.straight }
+	a.last_action = action
+
+	return action_to_dir(action, snake.dir)
+}
+
+fn (mut a Agent) reward(game &Game, reward f64, terminal bool) {
+	last_key := a.last_key or { panic("missing last key") }
+	last_action := a.last_action or { panic("missing last action") }
 	
-	return game
-}
+	al := 0.1
+	f := 0.8
 
-fn (mut s Snake) handle_input() {
-	key := rl.KeyboardKey.from(rl.get_key_pressed()) or {
-		return
+	value := a.q_table[last_key][last_action]
+
+	mut target := reward
+
+	if !terminal {
+		snake_head := game.snake.body[0]
+		key := "${snake_head.x},${snake_head.y},${game.apple.pos.x},${game.apple.pos.y},${game.snake.dir}"
+		if key !in a.q_table {
+			a.q_table[key] = [0.0, 0.0, 0.0]
+			for i, _ in a.q_table[key] {
+				mut head := snake_head
+				dir := action_to_dir(Action.from(i) or {panic(err)}, game.snake.dir)
+				move_vector(mut head, dir)
+				if is_hit_wall(head, game.columns, game.rows) {
+					a.q_table[key][i] = -100.0
+				}
+			}
+		}
+
+		max_qi := arrays.idx_max(a.q_table[key]) or { panic(err) }
+		max_q := a.q_table[key][max_qi]
+		target += f * max_q
 	}
 
-	match key {
-		.key_up {
-			if s.dir.y == 0 {
-				s.next_dir = rl.Vector2{0, -1}
-			}
-		}
-		.key_down {
-			if s.dir.y == 0 {
-				s.next_dir = rl.Vector2{0, 1}
-			}
-		}
-		.key_left {
-			if s.dir.x == 0 {
-				s.next_dir = rl.Vector2{-1, 0}
-			}
-		}
-		.key_right {
-			if s.dir.x == 0 {
-				s.next_dir = rl.Vector2{1, 0}
-			}
-		}
-		else {}
-	}
+	a.q_table[last_key][last_action] = value + al * (target - value)
+	println(a.q_table[last_key])
+	a.last_key = none
+	a.last_action = none
 }
-
 
 fn main() {
-
-	mut game := Game.new()
+	mut game := Game{}
+	game.init()
+	game.mode = .start
 
 	rl.init_window(game.screen_width, game.screen_height, "hello world")
-	camera := rl.Camera2D{
+
+	game.camera = rl.Camera2D{
 		target: rl.Vector2{-game.area_padding_left, -game.area_padding_top},
 		offset: rl.Vector2{0, 0},
 		rotation: 0,
 		zoom: 1
 	}
 
+	// mut q_values := []State{len: (game.columns * game.rows) ** 2}
+
+	// for i := 0; i < q_table.length; i++ {
+	// 	q_values[i] = 
+	// }
+	mut agent := Agent{}
+	agent.q_table = map[string][]f64{}
+	game.agent = agent
+	// println(q_table)
+
 	rl.set_target_fps(60)
 
 	for !rl.window_should_close() {
-		if game.mode != .playing {
-			key := rl.KeyboardKey.from(rl.get_key_pressed()) or { rl.KeyboardKey.key_null }
-			if key == .key_r {
-				game = Game.new()
-			}
-		} else {
 
-		// game.create_apple()
-		// game
-			game.snake.handle_input()
-			game.update()
-		}
+		game.update()
 
 		rl.begin_drawing()
 
 			rl.clear_background(rl.Color{25, 25, 25, 255})
+			game.draw()
 			
-			if game.mode != .playing {
-				rl.draw_text("Press (R) to restart", 10, 10, 30, rl.Color{255, 255, 255, 255})
-				rl.draw_text("Score (${game.score})", 10, 50, 30, rl.Color{255, 255, 255, 255})
-				if game.mode == .won {
-					rl.draw_text("Win!", 10, 90, 30, rl.Color{255, 255, 255, 255})
-				}
-			} else {
-				rl.draw_text("Score (${game.score})", 10, 10, 30, rl.Color{255, 255, 255, 255})
-
-				rl.begin_mode_2d(camera)
-				for i := 0; i <= game.rows; i++ {
-					rl.draw_rectangle(0, i * game.cell_height, game.area_height, 1, rl.Color{255, 10, 10, 55})
-				}
-
-				for i := 0; i <= game.columns; i++ {
-					rl.draw_rectangle(i * game.cell_width, 0, 1, game.area_height, rl.Color{255, 10, 10, 55})
-				}
-
-				game.draw_apple()
-				game.draw_snake()
-
-				rl.end_mode_2d()
-			}
-
-
 		rl.end_drawing()
 	}
 

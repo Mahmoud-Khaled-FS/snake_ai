@@ -128,6 +128,7 @@ pub fn draw_text(text string, pos_x int, pos_y int, font_size int, color Color) 
 
 pub enum KeyboardKey {
 	key_null				= 0
+	key_space       = 32
 	key_r						= 82
 	key_right				= 262
 	key_left        = 263
