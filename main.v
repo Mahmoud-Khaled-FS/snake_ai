@@ -47,12 +47,15 @@ fn is_hit_wall(head rl.Vector2, columns int, rows int) bool {
  	return head.x >= columns || head.x < 0 || head.y >= rows || head.y < 0
 }
 
-fn (mut s Snake) update() {
+fn (mut s Snake) update() bool {
 	s.move_timer += rl.get_frame_time()
 
 	if s.move_timer < s.move_interval {
-		return
+			return false
 	}
+
+	// s.move_timer -= s.move_interval
+
 	old_tail := rl.Vector2{s.body[s.body.len - 1].x, s.body[s.body.len - 1].y}
 	
 	if s.next_dir != none {
@@ -60,7 +63,6 @@ fn (mut s Snake) update() {
 		s.next_dir = none
 	}
 
-	s.move_timer -= s.move_interval
 	for i := s.body.len - 1; i > 0; i--{
 		s.body[i].x = s.body[i - 1].x
 		s.body[i].y = s.body[i - 1].y
@@ -74,6 +76,8 @@ fn (mut s Snake) update() {
 		s.body << old_tail
 		s.should_grow = false
 	}
+
+	return true
 }
 
 fn (s &Snake) is_collapse() bool {
@@ -275,16 +279,32 @@ fn (mut g Game) update_playing() {
 		g.snake.set_next_dir(action)
 	}
 
-	mut agent_reward := 0
 	g.snake.handle_input()
-	g.snake.update()
+
+	old_head := g.snake.body[0]
+	old_distance := math.abs(old_head.x - g.apple.pos.x) + math.abs(old_head.y - g.apple.pos.y)
+	
+	moved := g.snake.update()
+	if !moved {
+			return
+	}
 
 	head := g.snake.body[0]
+	new_distance := math.abs(head.x - g.apple.pos.x) + math.abs(head.y - g.apple.pos.y)
+	
+	mut reward := -0.1
+
+	if new_distance < old_distance {
+			reward += 1
+	} else if new_distance > old_distance {
+			reward -= 1
+	}
+	
 	if is_hit_wall(head, g.columns, g.rows) || g.snake.is_collapse() {
 		g.mode = .over
-		agent_reward = -50
+		reward = -10
 		if g.is_agent_playing {
-			g.agent.reward(g, agent_reward, true)
+			g.agent.reward(g, reward, true)
 		}
 		return
 	}
@@ -293,16 +313,17 @@ fn (mut g Game) update_playing() {
 		g.snake.should_grow = true
 		g.score += 1
 		g.create_apple()
-		agent_reward = 100
+		reward = 10
 	}
 	if g.is_agent_playing {
-		g.agent.reward(g, agent_reward, false)
+		g.agent.reward(g, reward, false)
 	}
 }
 
 fn (mut g Game) update_over() {
 	if g.is_agent_playing {
 		 g.init()
+		 return
 	}
 	key := rl.KeyboardKey.from(rl.get_key_pressed()) or { rl.KeyboardKey.key_null }
 	if key == .key_r {
@@ -372,8 +393,9 @@ fn (g &Game) draw() {
 struct Agent {
 mut:
 	q_table map[string][]f64
-	last_key ?string
+	last_state ?string
 	last_action ?Action
+	eps f64
 }
 
 enum Action {
@@ -381,6 +403,46 @@ enum Action {
 	left
 	right
 }
+
+fn is_danger(game &Game, dir Direction) bool {
+    mut head := game.snake.body[0]
+    move_vector(mut head, dir)
+
+    if is_hit_wall(head, game.columns, game.rows) {
+        return true
+    }
+
+    for i := 1; i < game.snake.body.len; i++ {
+        body := game.snake.body[i]
+
+        if head.x == body.x && head.y == body.y {
+            return true
+        }
+    }
+
+    return false
+}
+
+fn get_state(game &Game) string {
+    head := game.snake.body[0]
+    dir := game.snake.dir
+
+    left_dir := action_to_dir(.left, dir)
+    right_dir := action_to_dir(.right, dir)
+
+    danger_straight := is_danger(game, dir)
+    danger_left := is_danger(game, left_dir)
+    danger_right := is_danger(game, right_dir)
+
+    apple_left := game.apple.pos.x < head.x
+    apple_right := game.apple.pos.x > head.x
+    apple_up := game.apple.pos.y < head.y
+    apple_down := game.apple.pos.y > head.y
+
+    return "${danger_straight},${danger_left},${danger_right}," +
+        "${apple_left},${apple_right},${apple_up},${apple_down}"
+}
+
 
 fn action_to_dir(action Action, dir Direction) Direction {
 	match action {
@@ -409,27 +471,35 @@ fn action_to_dir(action Action, dir Direction) Direction {
 fn (mut a Agent) action(game &Game) Direction {
 	snake := game.snake
 	mut snake_head := game.snake.body[0]
-	key := "${snake_head.x},${snake_head.y},${game.apple.pos.x},${game.apple.pos.y},${snake.dir}"
-	a.last_key = key
-	if key !in a.q_table {
-		a.q_table[key] = [0.0, 0.0, 0.0]
-		for i, _ in a.q_table[key] {
+	state := get_state(game)
+	a.last_state = state
+
+	if state !in a.q_table {
+		a.q_table[state] = [0.0, 0.0, 0.0]
+		for i, _ in a.q_table[state] {
 			mut head := snake_head
 			dir := action_to_dir(Action.from(i) or {panic(err)}, snake.dir)
 			move_vector(mut head, dir)
 			if is_hit_wall(head, game.columns, game.rows) {
-				a.q_table[key][i] = -100.0
+				a.q_table[state][i] = -100.0
 			}
 		}
 	}
 
-	p := rand.f32()
 	mut rand_index := 0
-	if p < 0.2 {
+
+	if rand.f32() < a.eps {
 		rand_index = rand.intn(3) or { 0 } 
-	}else {
-		rand_index = arrays.idx_max(a.q_table[key]) or { panic(err) }
+	} else {
+		rand_index = arrays.idx_max(a.q_table[state]) or { panic(err) }
 	}
+
+	a.eps *= 0.99995
+
+	if a.eps < 0.05 {
+			a.eps = 0.05
+	}
+	
 	action := Action.from(rand_index) or { Action.straight }
 	a.last_action = action
 
@@ -437,39 +507,39 @@ fn (mut a Agent) action(game &Game) Direction {
 }
 
 fn (mut a Agent) reward(game &Game, reward f64, terminal bool) {
-	last_key := a.last_key or { panic("missing last key") }
+	last_state := a.last_state or { panic("missing last state") }
 	last_action := a.last_action or { panic("missing last action") }
 	
 	al := 0.1
 	f := 0.8
 
-	value := a.q_table[last_key][last_action]
+	value := a.q_table[last_state][last_action]
 
 	mut target := reward
 
 	if !terminal {
 		snake_head := game.snake.body[0]
-		key := "${snake_head.x},${snake_head.y},${game.apple.pos.x},${game.apple.pos.y},${game.snake.dir}"
-		if key !in a.q_table {
-			a.q_table[key] = [0.0, 0.0, 0.0]
-			for i, _ in a.q_table[key] {
+		state := get_state(game)
+		if state !in a.q_table {
+			a.q_table[state] = [0.0, 0.0, 0.0]
+			for i, _ in a.q_table[state] {
 				mut head := snake_head
 				dir := action_to_dir(Action.from(i) or {panic(err)}, game.snake.dir)
 				move_vector(mut head, dir)
 				if is_hit_wall(head, game.columns, game.rows) {
-					a.q_table[key][i] = -100.0
+					a.q_table[state][i] = -100.0
 				}
 			}
 		}
 
-		max_qi := arrays.idx_max(a.q_table[key]) or { panic(err) }
-		max_q := a.q_table[key][max_qi]
+		max_qi := arrays.idx_max(a.q_table[state]) or { panic(err) }
+		max_q := a.q_table[state][max_qi]
 		target += f * max_q
 	}
 
-	a.q_table[last_key][last_action] = value + al * (target - value)
-	println(a.q_table[last_key])
-	a.last_key = none
+	a.q_table[last_state][last_action] = value + al * (target - value)
+	println(a.q_table[last_state])
+	a.last_state = none
 	a.last_action = none
 }
 
@@ -494,6 +564,7 @@ fn main() {
 	// }
 	mut agent := Agent{}
 	agent.q_table = map[string][]f64{}
+	agent.eps = 0.8
 	game.agent = agent
 	// println(q_table)
 
