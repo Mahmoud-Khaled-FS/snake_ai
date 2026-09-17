@@ -11,6 +11,13 @@ enum GameMode {
 	won
 }
 
+enum CellType {
+	empty
+	snake
+	apple
+	wall
+}
+
 struct Apple {
 mut:
 	pos rl.Vector2
@@ -54,10 +61,10 @@ fn (mut s Snake) update() bool {
 			return false
 	}
 
-	// s.move_timer -= s.move_interval
+	s.move_timer -= s.move_interval
 
 	old_tail := rl.Vector2{s.body[s.body.len - 1].x, s.body[s.body.len - 1].y}
-	
+
 	if s.next_dir != none {
 		s.dir = s.next_dir
 		s.next_dir = none
@@ -71,7 +78,7 @@ fn (mut s Snake) update() bool {
 	move_vector(mut s.body[0], s.dir)
 	// s.body[0].y += s.dir.y
 	// s.body[0].x += s.dir.x
-	
+
 	if s.should_grow {
 		s.body << old_tail
 		s.should_grow = false
@@ -241,8 +248,8 @@ fn (g &Game) draw_snake() {
 }
 
 fn (mut g Game) init() {
-	g.rows = 20
-	g.columns = 20
+	g.rows = 15
+	g.columns = 15
 	g.screen_width = 600
 	g.screen_height = 800
 	g.area_height = math.min(g.screen_height, g.screen_width)
@@ -270,7 +277,7 @@ fn (mut g Game) update_start() {
 	key := rl.KeyboardKey.from(rl.get_key_pressed()) or { rl.KeyboardKey.key_null }
 	if key == .key_space {
 		g.mode = .playing
-	} 
+	}
 }
 
 fn (mut g Game) update_playing() {
@@ -283,7 +290,7 @@ fn (mut g Game) update_playing() {
 
 	old_head := g.snake.body[0]
 	old_distance := math.abs(old_head.x - g.apple.pos.x) + math.abs(old_head.y - g.apple.pos.y)
-	
+
 	moved := g.snake.update()
 	if !moved {
 			return
@@ -291,7 +298,7 @@ fn (mut g Game) update_playing() {
 
 	head := g.snake.body[0]
 	new_distance := math.abs(head.x - g.apple.pos.x) + math.abs(head.y - g.apple.pos.y)
-	
+
 	mut reward := -0.1
 
 	if new_distance < old_distance {
@@ -299,7 +306,7 @@ fn (mut g Game) update_playing() {
 	} else if new_distance > old_distance {
 			reward -= 1
 	}
-	
+
 	if is_hit_wall(head, g.columns, g.rows) || g.snake.is_collapse() {
 		g.mode = .over
 		reward = -10
@@ -423,25 +430,80 @@ fn is_danger(game &Game, dir Direction) bool {
     return false
 }
 
+// fn get_state(game &Game) string {
+//     head := game.snake.body[0]
+//     dir := game.snake.dir
+
+//     left_dir := action_to_dir(.left, dir)
+//     right_dir := action_to_dir(.right, dir)
+
+//     danger_straight := is_danger(game, dir)
+//     danger_left := is_danger(game, left_dir)
+//     danger_right := is_danger(game, right_dir)
+
+//     apple_left := game.apple.pos.x < head.x
+//     apple_right := game.apple.pos.x > head.x
+//     apple_up := game.apple.pos.y < head.y
+//     apple_down := game.apple.pos.y > head.y
+
+//     return "${danger_straight},${danger_left},${danger_right}," +
+//         "${apple_left},${apple_right},${apple_up},${apple_down}"
+// }
+
 fn get_state(game &Game) string {
-    head := game.snake.body[0]
-    dir := game.snake.dir
+	head := game.snake.body[0]
 
-    left_dir := action_to_dir(.left, dir)
-    right_dir := action_to_dir(.right, dir)
+	view_size := 6
+	half := view_size / 2
 
-    danger_straight := is_danger(game, dir)
-    danger_left := is_danger(game, left_dir)
-    danger_right := is_danger(game, right_dir)
+	mut state := ""
 
-    apple_left := game.apple.pos.x < head.x
-    apple_right := game.apple.pos.x > head.x
-    apple_up := game.apple.pos.y < head.y
-    apple_down := game.apple.pos.y > head.y
+	for y := 0; y < view_size; y++ {
+		for x := 0; x < view_size; x++ {
+			grid_x := int(head.x) + x - half
+			grid_y := int(head.y) + y - half
 
-    return "${danger_straight},${danger_left},${danger_right}," +
-        "${apple_left},${apple_right},${apple_up},${apple_down}"
+			mut cell := CellType.empty
+
+			if grid_x < 0 ||
+				grid_x >= game.columns ||
+				grid_y < 0 ||
+				grid_y >= game.rows {
+
+				cell = .wall
+			} else if game.apple.pos.x == grid_x &&
+				game.apple.pos.y == grid_y {
+
+				cell = .apple
+			} else {
+				for i, body in game.snake.body {
+					if body.x == grid_x && body.y == grid_y {
+						cell = .snake
+						break
+					}
+				}
+			}
+
+			state += match cell {
+				.empty { "0" }
+				.snake { "1" }
+				.apple { "2" }
+				.wall { "3" }
+			}
+		}
+	}
+
+	// Add current direction.
+	state += match game.snake.dir {
+		.up { "U" }
+		.down { "D" }
+		.left { "L" }
+		.right { "R" }
+	}
+
+	return state
 }
+
 
 
 fn action_to_dir(action Action, dir Direction) Direction {
@@ -480,8 +542,8 @@ fn (mut a Agent) action(game &Game) Direction {
 			mut head := snake_head
 			dir := action_to_dir(Action.from(i) or {panic(err)}, snake.dir)
 			move_vector(mut head, dir)
-			if is_hit_wall(head, game.columns, game.rows) {
-				a.q_table[state][i] = -100.0
+			if is_danger(game, dir) {
+				a.q_table[state][i] = -10.0
 			}
 		}
 	}
@@ -489,17 +551,17 @@ fn (mut a Agent) action(game &Game) Direction {
 	mut rand_index := 0
 
 	if rand.f32() < a.eps {
-		rand_index = rand.intn(3) or { 0 } 
+		rand_index = rand.intn(3) or { 0 }
 	} else {
 		rand_index = arrays.idx_max(a.q_table[state]) or { panic(err) }
 	}
 
-	a.eps *= 0.99995
+	a.eps *= 0.995
 
 	if a.eps < 0.05 {
 			a.eps = 0.05
 	}
-	
+
 	action := Action.from(rand_index) or { Action.straight }
 	a.last_action = action
 
@@ -509,9 +571,9 @@ fn (mut a Agent) action(game &Game) Direction {
 fn (mut a Agent) reward(game &Game, reward f64, terminal bool) {
 	last_state := a.last_state or { panic("missing last state") }
 	last_action := a.last_action or { panic("missing last action") }
-	
+
 	al := 0.1
-	f := 0.8
+	f := 0.9
 
 	value := a.q_table[last_state][last_action]
 
@@ -525,9 +587,8 @@ fn (mut a Agent) reward(game &Game, reward f64, terminal bool) {
 			for i, _ in a.q_table[state] {
 				mut head := snake_head
 				dir := action_to_dir(Action.from(i) or {panic(err)}, game.snake.dir)
-				move_vector(mut head, dir)
-				if is_hit_wall(head, game.columns, game.rows) {
-					a.q_table[state][i] = -100.0
+				if is_danger(game, dir) {
+					a.q_table[state][i] = -10.0
 				}
 			}
 		}
@@ -560,7 +621,7 @@ fn main() {
 	// mut q_values := []State{len: (game.columns * game.rows) ** 2}
 
 	// for i := 0; i < q_table.length; i++ {
-	// 	q_values[i] = 
+	// 	q_values[i] =
 	// }
 	mut agent := Agent{}
 	agent.q_table = map[string][]f64{}
@@ -578,7 +639,7 @@ fn main() {
 
 			rl.clear_background(rl.Color{25, 25, 25, 255})
 			game.draw()
-			
+
 		rl.end_drawing()
 	}
 
